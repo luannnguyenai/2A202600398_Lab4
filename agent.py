@@ -5,6 +5,7 @@ from typing_extensions import TypedDict
 from langgraph.graph import StateGraph, START, END
 from langgraph.graph.message import add_messages
 from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.memory import MemorySaver
 
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import SystemMessage
@@ -71,7 +72,9 @@ builder.add_conditional_edges("agent", tools_condition)
 # tools → agent: sau khi tool chạy xong, quay lại agent để xử lý kết quả
 builder.add_edge("tools", "agent")
 
-graph = builder.compile()
+# Thêm Bộ nhớ (Memory)
+checkpointer = MemorySaver()
+graph = builder.compile(checkpointer=checkpointer)
 
 
 # 6. Chat loop
@@ -91,7 +94,13 @@ if __name__ == "__main__":
 
         print("\nTravelBuddy đang suy nghĩ...")
 
-        result = graph.invoke({"messages": [("human", user_input)]})
+        # Cấu hình thread_id để Agent nhận diện bộ nhớ của phiên chat này
+        config = {"configurable": {"thread_id": "travel_session_01"}}
+
+        result = graph.invoke(
+            {"messages": [("human", user_input)]},
+            config=config
+        )
 
         final = result["messages"][-1]
         print(f"\nTravelBuddy: {final.content}")
