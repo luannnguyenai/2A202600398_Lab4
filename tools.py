@@ -1,37 +1,34 @@
 from langchain_core.tools import tool
+from datetime import datetime, timedelta
+from fast_flights import FlightData, get_flights, Passengers
 
 # ============================================================
-# MOCK DATA — Dữ liệu giả lập hệ thống du lịch
-# Lưu ý: Giá cả có logic (VD: cuối tuần đắt hơn, hạng cao hơn đắt hơn)
-# Sinh viên cần đọc hiểu data để debug test cases.
+# AIRPORT MAPPING — Ánh xạ tên thành phố sang mã IATA
+# Hỗ trợ toàn bộ các sân bay dân dụng tại Việt Nam
 # ============================================================
-
-FLIGHTS_DB = {
-    ("Hà Nội", "Đà Nẵng"): [
-        {"airline": "Vietnam Airlines", "departure": "06:00", "arrival": "07:20", "price": 1_450_000, "class": "economy"},
-        {"airline": "Vietnam Airlines", "departure": "14:00", "arrival": "15:20", "price": 2_800_000, "class": "business"},
-        {"airline": "VietJet Air",      "departure": "08:30", "arrival": "09:50", "price": 890_000,   "class": "economy"},
-        {"airline": "Bamboo Airways",   "departure": "11:00", "arrival": "12:20", "price": 1_200_000, "class": "economy"},
-    ],
-    ("Hà Nội", "Phú Quốc"): [
-        {"airline": "Vietnam Airlines", "departure": "07:00", "arrival": "09:15", "price": 2_100_000, "class": "economy"},
-        {"airline": "VietJet Air",      "departure": "10:00", "arrival": "12:15", "price": 1_350_000, "class": "economy"},
-        {"airline": "VietJet Air",      "departure": "16:00", "arrival": "18:15", "price": 1_100_000, "class": "economy"},
-    ],
-    ("Hà Nội", "Hồ Chí Minh"): [
-        {"airline": "Vietnam Airlines", "departure": "06:00", "arrival": "08:10", "price": 1_600_000, "class": "economy"},
-        {"airline": "VietJet Air",      "departure": "07:30", "arrival": "09:40", "price": 950_000,   "class": "economy"},
-        {"airline": "Bamboo Airways",   "departure": "12:00", "arrival": "14:10", "price": 1_300_000, "class": "economy"},
-        {"airline": "Vietnam Airlines", "departure": "18:00", "arrival": "20:10", "price": 3_200_000, "class": "business"},
-    ],
-    ("Hồ Chí Minh", "Đà Nẵng"): [
-        {"airline": "Vietnam Airlines", "departure": "09:00", "arrival": "10:20", "price": 1_300_000, "class": "economy"},
-        {"airline": "VietJet Air",      "departure": "13:00", "arrival": "14:20", "price": 780_000,   "class": "economy"},
-    ],
-    ("Hồ Chí Minh", "Phú Quốc"): [
-        {"airline": "Vietnam Airlines", "departure": "08:00", "arrival": "09:00", "price": 1_100_000, "class": "economy"},
-        {"airline": "VietJet Air",      "departure": "15:00", "arrival": "16:00", "price": 650_000,   "class": "economy"},
-    ],
+AIRPORT_MAP = {
+    "hà nội": "HAN", "nội bài": "HAN",
+    "hồ chí minh": "SGN", "sài gòn": "SGN", "tân sơn nhất": "SGN",
+    "đà nẵng": "DAD",
+    "nha trang": "CXR", "cam ranh": "CXR",
+    "phú quốc": "PQC",
+    "hải phòng": "HPH", "cát bi": "HPH",
+    "huế": "HUI", "phú bài": "HUI",
+    "cần thơ": "VCA",
+    "vinh": "VII",
+    "vân đồn": "VDO", "quảng ninh": "VDO",
+    "đà lạt": "DLI", "liên khương": "DLI",
+    "buôn ma thuột": "BMV",
+    "cà mau": "CAH",
+    "côn đảo": "VCS",
+    "chu lai": "VCL", "tam kỳ": "VCL",
+    "điện biên phủ": "DIN",
+    "đồng hới": "VDH",
+    "pleiku": "PXU",
+    "quy nhơn": "UIH", "phù cát": "UIH",
+    "rạch giá": "VKG",
+    "thanh hóa": "THD", "thọ xuân": "THD",
+    "tuy hòa": "TBB"
 }
 
 HOTELS_DB = {
@@ -58,51 +55,73 @@ HOTELS_DB = {
 
 
 @tool
-def search_flights(origin: str, destination: str) -> str:
+def search_flights(origin: str, destination: str, date: str = None) -> str:
     """
-    Tìm kiếm các chuyến bay giữa hai thành phố.
+    Tìm kiếm các chuyến bay thực tế giữa hai thành phố bằng fast_flights.
     Tham số:
-    - origin: thành phố khởi hành (VD: 'Hà Nội', 'Hồ Chí Minh')
-    - destination: thành phố đến (VD: 'Đà Nẵng', 'Phú Quốc')
-    Trả về danh sách chuyến bay với hãng, giờ bay, giá vé.
-    Nếu không tìm thấy tuyến bay, trả về thông báo không có chuyến.
+    - origin: tên thành phố/sân bay khởi hành (VD: 'Hà Nội', 'Nội Bài', 'Sài Gòn')
+    - destination: tên thành phố/sân bay đến (VD: 'Cam Ranh', 'Đà Lạt', 'Phú Quốc')
+    - date: ngày bay định dạng 'YYYY-MM-DD'. Nếu không có, mặc định là 7 ngày sau.
     """
     try:
-        # Tra cứu chiều đi
-        flights = FLIGHTS_DB.get((origin, destination))
+        # Lấy mã IATA từ bảng ánh xạ
+        from_code = AIRPORT_MAP.get(origin.lower().strip())
+        to_code = AIRPORT_MAP.get(destination.lower().strip())
 
-        # Nếu không tìm thấy, thử tra ngược chiều
-        if flights is None:
-            flights = FLIGHTS_DB.get((destination, origin))
-            if flights is not None:
-                # Thông báo chỉ tìm thấy chiều ngược
-                return (
-                    f"⚠️ Không tìm thấy chuyến bay từ {origin} đến {destination}.\n"
-                    f"Tuy nhiên có chuyến từ {destination} đến {origin} — "
-                    f"bạn có muốn xem không?\n"
-                    f"(Gọi lại với origin='{destination}', destination='{origin}')"
-                )
-            else:
-                return f"❌ Không tìm thấy chuyến bay từ {origin} đến {destination}. Tuyến này hiện chưa có trong hệ thống."
+        if not from_code or not to_code:
+            return f"⚠️ Xin lỗi, hệ thống hiện chưa hỗ trợ tuyến bay từ '{origin}' đến '{destination}'."
 
-        # Format danh sách chuyến bay
-        lines = [f"✈️ Chuyến bay từ {origin} → {destination} ({len(flights)} chuyến):\n"]
-        for i, f in enumerate(flights, 1):
-            price_fmt = f"{f['price']:,.0f}".replace(",", ".")
-            lines.append(
-                f"  {i}. {f['airline']} | {f['departure']} → {f['arrival']} "
-                f"| {f['class'].capitalize()} | 💰 {price_fmt}đ"
-            )
+        # Xử lý ngày tháng (Hỗ trợ cả YYYY-MM-DD và dd-mm-yyyy)
+        if not date:
+            target_date = datetime.now() + timedelta(days=7)
+            date = target_date.strftime("%Y-%m-%d")
+        else:
+            # Nếu người dùng nhập dd-mm-yyyy, quy đổi về YYYY-MM-DD
+            if "-" in date:
+                parts = date.split("-")
+                if len(parts[0]) == 2: # Trường hợp dd-mm-yyyy
+                    try:
+                        temp_date = datetime.strptime(date, "%d-%m-%Y")
+                        date = temp_date.strftime("%Y-%m-%d")
+                    except ValueError:
+                        pass # Để try-except phía sau xử lý lỗi định dạng chung
 
-        # Tìm vé rẻ nhất
-        cheapest = min(flights, key=lambda x: x["price"])
-        cheapest_price = f"{cheapest['price']:,.0f}".replace(",", ".")
-        lines.append(f"\n💡 Vé rẻ nhất: {cheapest['airline']} lúc {cheapest['departure']} — {cheapest_price}đ")
+        # Kiểm tra ngày tháng và logic ngày quá khứ (Hôm nay: 2026-04-07)
+        try:
+            req_date = datetime.strptime(date, "%Y-%m-%d")
+            if req_date.date() < datetime.now().date():
+                return "❌ Ngày bạn chọn đã qua, vui lòng chọn ngày khác."
+        except ValueError:
+            return "Hệ thống bị lỗi, vui lòng bảo trì hệ thống"
+
+        # Gọi fast_flights API
+        passengers = Passengers(adults=1, children=0, infants_in_seat=0, infants_on_lap=0)
+        fd = FlightData(date=date, from_airport=from_code, to_airport=to_code)
+
+        result = get_flights(flight_data=[fd], trip='one-way', passengers=passengers, seat='economy')
+
+        if not result or not result.flights:
+            return "Hệ thống bị lỗi, vui lòng bảo trì hệ thống"
+
+        # Format danh sách chuyến bay thực tế - Rút gọn tối đa để tránh lỗi 400
+        lines = [f"✈️ Kết quả bay {origin} → {destination} ({date}):\n"]
+        
+        # Chỉ lấy 2-3 chuyến quan trọng nhất
+        for i, f in enumerate(result.flights[:3], 1):
+            price_val = f.price if hasattr(f, 'price') else "N/A"
+            airline = f.name if hasattr(f, 'name') else "N/A"
+            dep = f.departure if hasattr(f, 'departure') else "N/A"
+            arr = f.arrival if hasattr(f, 'arrival') else "N/A"
+            time = f"{dep}→{arr}"
+            
+            # price_val đã có sẵn định dạng (VD: ₫1.450.000), không cần format thêm
+            lines.append(f"  {i}. {airline} | {time} | 💰 {price_val}")
 
         return "\n".join(lines)
 
     except Exception as e:
-        return f"❌ Lỗi khi tìm kiếm chuyến bay: {str(e)}"
+        print(f"DEBUG: Lỗi API: {str(e)}")
+        return "Hệ thống bị lỗi, vui lòng bảo trì hệ thống"
 
 
 @tool
@@ -155,66 +174,53 @@ def calculate_budget(total_budget: int, expenses: str) -> str:
     """
     Tính toán ngân sách còn lại sau khi trừ các khoản chi phí.
     Tham số:
-    - total_budget: tổng ngân sách ban đầu (VNĐ)
-    - expenses: chuỗi mô tả các khoản chi, mỗi khoản cách nhau bởi dấu phẩy,
-      định dạng 'tên_khoản:số_tiền' (VD: 'vé_máy_bay:890000,khách_sạn:650000')
-    Trả về bảng chi tiết các khoản chi và số tiền còn lại.
-    Nếu vượt ngân sách, cảnh báo rõ ràng số tiền thiếu.
+    - total_budget: tổng ngân sách ban đầu (VNĐ, tối đa 10 tỷ)
+    - expenses: định dạng 'tên_khoản:số_tiền' (VD: 'vé_máy_bay:890000,khách_sạn:650000')
     """
     try:
-        # Parse chuỗi expenses thành dict {tên: số_tiền}
+        # Giới hạn số tiền tối đa (10 tỷ)
+        if total_budget > 10_000_000_000 or total_budget < 0:
+            return "❌ Ngân sách không hợp lệ (Phải từ 0 đến 10 tỷ VNĐ)."
+
         expense_dict = {}
-        if expenses.strip():
-            items = expenses.strip().split(",")
-            for item in items:
-                item = item.strip()
-                if ":" not in item:
-                    return (
-                        f"❌ Lỗi format: '{item}' không đúng định dạng 'tên_khoản:số_tiền'.\n"
-                        f"Ví dụ đúng: 'vé_máy_bay:890000,khách_sạn:650000'"
-                    )
-                parts = item.split(":", 1)
-                name = parts[0].strip().replace("_", " ").capitalize()
-                try:
-                    amount = int(float(parts[1].strip()))
-                    if amount < 0:
-                        return f"❌ Số tiền không được âm: '{parts[0]}' = {parts[1]}"
-                    expense_dict[name] = amount
-                except ValueError:
-                    return (
-                        f"❌ Lỗi format: '{parts[1]}' không phải số hợp lệ cho khoản '{parts[0]}'.\n"
-                        f"Vui lòng nhập số nguyên (VD: 890000)."
-                    )
+        if not expenses or not expenses.strip():
+            return "❌ Vui lòng cung cấp danh sách chi phí."
 
-        # Tính tổng chi phí
+        items = expenses.strip().split(",")
+        for item in items:
+            if ":" not in item:
+                return "Hệ thống bị lỗi, vui lòng bảo trì hệ thống"
+            
+            parts = item.split(":", 1)
+            name = parts[0].strip().replace("_", " ").capitalize()
+            try:
+                # Chặn SQL Injection/Overflow thô sơ bằng cách check độ dài và kiểu dữ liệu
+                if len(name) > 50: return "❌ Tên khoản chi quá dài."
+                amount = int(float(parts[1].strip()))
+                if amount < 0 or amount > 10_000_000_000:
+                    return "❌ Số tiền chi phí không hợp lệ."
+                expense_dict[name] = amount
+            except (ValueError, TypeError):
+                return "Hệ thống bị lỗi, vui lòng bảo trì hệ thống"
+
         total_expense = sum(expense_dict.values())
-
-        # Format ngân sách
         budget_fmt = f"{total_budget:,.0f}".replace(",", ".")
         total_expense_fmt = f"{total_expense:,.0f}".replace(",", ".")
 
-        # Tạo bảng chi tiết
         lines = ["💰 Bảng chi phí:\n"]
         for name, amount in expense_dict.items():
-            amount_fmt = f"{amount:,.0f}".replace(",", ".")
-            lines.append(f"   - {name}: {amount_fmt}đ")
-
+            lines.append(f"   - {name}: {f'{amount:,.0f}'.replace(',', '.')}đ")
         lines.append("   " + "─" * 30)
-        lines.append(f"   Tổng chi:  {total_expense_fmt}đ")
-        lines.append(f"   Ngân sách: {budget_fmt}đ")
+        lines.append(f"   Tổng chi:  {total_expense_fmt}đ\n   Ngân sách: {budget_fmt}đ")
 
         remaining = total_budget - total_expense
+        remaining_fmt = f"{abs(remaining):,.0f}".replace(",", ".")
         if remaining >= 0:
-            remaining_fmt = f"{remaining:,.0f}".replace(",", ".")
             lines.append(f"   Còn lại:   {remaining_fmt}đ ✅")
-            if remaining > 0:
-                lines.append(f"\n🎉 Bạn vẫn còn {remaining_fmt}đ để chi cho ăn uống, tham quan và mua sắm!")
         else:
-            over_fmt = f"{abs(remaining):,.0f}".replace(",", ".")
-            lines.append(f"   Còn lại:   -{over_fmt}đ ⚠️")
-            lines.append(f"\n⚠️ Vượt ngân sách {over_fmt}đ! Cần điều chỉnh lại kế hoạch.")
-
+            lines.append(f"   Thiếu:     {remaining_fmt}đ ⚠️")
+        
         return "\n".join(lines)
 
-    except Exception as e:
-        return f"❌ Lỗi khi tính ngân sách: {str(e)}"
+    except Exception:
+        return "Hệ thống bị lỗi, vui lòng bảo trì hệ thống"
